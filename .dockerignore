@@ -1,0 +1,6 @@
+.git
+check/
+arena/
+docs/
+mechfight.schema.json
+**/__pycache__
