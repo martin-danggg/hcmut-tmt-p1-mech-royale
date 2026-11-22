@@ -1,4 +1,4 @@
-"""HCMUT TMT - Mech Royale bot v3 (rule-based, standard library only).
+"""HCMUT TMT - Mech Royale bot v4a (v3 + FIRE_SLACK 0.15) (rule-based, standard library only).
 
 Ideas: stay inside the zone early, lead gun shots, only fire with a clear line,
 laser/lightning as second weapon, face the attacker, back off to regenerate,
@@ -24,11 +24,16 @@ THREAT_SOUNDS = {"gun", "laser", "laser_charge", "lightning", "mortar", "step", 
 UPGRADE_ORDER = ["plating", "armor", "nanites", "laser_damage", "gun_damage", "laser_charge", "gun_rate",
                  "lightning_efficiency", "gyros", "gun_mag", "servos", "sensors", "lightning_range",
                  "lightning_chain", "gun_velocity", "laser_pierce", "capacitor", "reactor", "jets"]
-WANT_WEAPONS = ["laser", "lightning"]
+WANT_WEAPONS = ["laser", "lightning"]  # never take a mortar (cook-off, self splash)
 FARM_NPC_RANGE = 180.0   # v3: actively farm drones (2 cubes each) and crates (1 cube) when no mech is in sight
 FARM_CRATE_RANGE = 150.0
 LOOT_RANGE = 180.0
-EXPLORE_UNTIL = 330.0  # never take a mortar (cook-off, self splash)
+EXPLORE_UNTIL = 330.0
+# tuning knobs (one experiment = one change here)
+FIRE_SLACK = 0.15       # rad added to the gun's on-target tolerance (torso slews 0.2 rad per tick)
+WANT_GUN = 100.0        # preferred fighting distance with only the gun
+WANT_LASER = 150.0      # ... when holding a laser
+WANT_LIGHTNING = 30.0   # ... when holding lightning (and HP > 50%)
 
 
 def wrap(a):
@@ -330,7 +335,7 @@ class Bot:
             tol = max(0.006, 0.7 * math.atan2(rad, max(d, 1.0)))
             err_y = abs(wrap(ay - aim_yaw))
             err_p = abs(ap - aim_pitch)
-            on = err_y < tol and err_p < tol * 1.6
+            on = err_y < tol + FIRE_SLACK and err_p < tol * 1.6 + FIRE_SLACK * 0.5
             if gun is not None and tvis and on and d < grange - 5 and gun.get("reload", 0) == 0:
                 fire[slot["gun"]] = True
             if "laser" in slot:
@@ -399,7 +404,7 @@ class Bot:
             tp = target["pos"]
             to_t = math.atan2(tp[1] - me[1], tp[0] - me[0])
             d = dist2(tp, me)
-            want = 30.0 if ("lightning" in slot and hp_frac > 0.5) else (150.0 if "laser" in slot else 100.0)
+            want = WANT_LIGHTNING if ("lightning" in slot and hp_frac > 0.5) else (WANT_LASER if "laser" in slot else WANT_GUN)
             radial = 0.0
             if d < want - 15:
                 radial = -1.0
