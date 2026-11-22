@@ -1,8 +1,10 @@
-"""HCMUT TMT - Mech Royale bot v1 (rule-based, standard library only).
+"""HCMUT TMT - Mech Royale bot v2 (rule-based, standard library only).
 
 Ideas: stay inside the zone early, lead gun shots, only fire with a clear line,
 laser/lightning as second weapon, face the attacker, back off to regenerate,
-take cubes/loot/drops when it is quiet. All rule numbers are read from hello.config.
+take cubes/loot/drops when it is quiet.
+v2: when HP < 45% with a known threat, walk to the nearest spot no threat can see
+and stand still (silent) until HP > 90%. All rule numbers are read from hello.config.
 """
 import math
 import os
@@ -100,6 +102,10 @@ class Bot:
         self.threat_until = 0.0
         self.scan_phase = self.rng.random() * TAU
         self.last_hp = None
+        self.seen = {}  # mech id -> (t, pos) last time we knew where it was
+        self.hiding = False
+        self.cover = None
+        self.cover_t = -1.0
 
     # ------------------------------------------------------------------ zone
     def zone_now(self, z, t):
@@ -158,6 +164,42 @@ class Bot:
                     return a, False
         return yaw, energy > 25
 
+    def walkable_line(self, a, b, feet):
+        g = self.grid
+        n = int(dist2(a, b) / 2.0) + 1
+        lim = feet + self.cfg["mech"]["step_up"] + 0.3
+        for k in range(1, n + 1):
+            f = k / n
+            if g.height(a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f) > lim:
+                return False
+        return True
+
+    def find_cover(self, me, threats, z, t):
+        """Closest reachable spot where no known threat's eye can see our top."""
+        g = self.grid
+        if not g.ok or not threats:
+            return None
+        away = math.atan2(sum(me[1] - p[1] for p in threats), sum(me[0] - p[0] for p in threats))
+        best = None
+        for r in (7.0, 12.0, 18.0, 25.0, 33.0):
+            for k in range(16):
+                a = away + (k - 8) * TAU / 16
+                p = [me[0] + math.cos(a) * r, me[1] + math.sin(a) * r]
+                pz = g.height(p[0], p[1])
+                if pz > me[2] + 1.5 or not self.safe(p, z, t):
+                    continue
+                if not self.walkable_line(me, p, me[2]):
+                    continue
+                top = [p[0], p[1], pz + 8.5]
+                if any(g.los([q[0], q[1], q[2] + 8.0], top) for q in threats):
+                    continue
+                cost = r + 6.0 * abs(wrap(a - away)) / math.pi
+                if best is None or cost < best[0]:
+                    best = (cost, p)
+            if best is not None:
+                return best[1]
+        return None
+
     # ------------------------------------------------------------- shooting
     def lead(self, me_muzzle, tpos, tvel, speed, zoff):
         c = [tpos[0], tpos[1], tpos[2] + zoff]
@@ -209,7 +251,14 @@ class Bot:
         # ---- threats seen
         mechs = [m for m in obs["mechs"] if m["kind"] == "mech"]
         npcs = [m for m in obs["mechs"] if m["kind"] == "npc"]
+        for m in mechs:
+            self.seen[m["id"]] = (t, m["pos"])
+        for k in [k for k, v in self.seen.items() if t - v[0] > 10.0]:
+            del self.seen[k]
         for e in obs["events"]:
+            if e["type"] == "damaged" and e.get("by") is not None and e["by"] not in self.seen and e.get("bearing") is not None:
+                b = e["bearing"]
+                self.seen[e["by"]] = (t, [me[0] + math.cos(b) * 80, me[1] + math.sin(b) * 80, me[2]])
             if e["type"] == "damaged" and e.get("bearing") is not None:
                 self.threat_yaw = e["bearing"]
                 self.threat_until = t + 2.5
@@ -341,8 +390,6 @@ class Bot:
             to_t = math.atan2(tp[1] - me[1], tp[0] - me[0])
             d = dist2(tp, me)
             want = 30.0 if ("lightning" in slot and hp_frac > 0.5) else (150.0 if "laser" in slot else 100.0)
-            if hp_frac < 0.35:
-                want = 1e9  # back off and regenerate
             radial = 0.0
             if d < want - 15:
                 radial = -1.0
@@ -390,6 +437,30 @@ class Bot:
                 if dd > 10:
                     move_yaw = math.atan2(nc[1] - me[1], nc[0] - me[0])
                     speed = 0.4
+        # ---- hide behind a building to regenerate (v2)
+        threats = [v[1] for v in self.seen.values()]
+        if not self.hiding and hp_frac < 0.45 and threats:
+            self.hiding = True
+        if self.hiding and (hp_frac > 0.9 or not threats):
+            self.hiding = False
+            self.cover = None
+        if self.hiding and not outside:
+            if self.cover is None or t - self.cover_t > 0.6:
+                self.cover = self.find_cover(me, threats, z, t)
+                self.cover_t = t
+            if self.cover is not None:
+                dd = dist2(self.cover, me)
+                if dd > 1.5:
+                    move_yaw = math.atan2(self.cover[1] - me[1], self.cover[0] - me[0])
+                    speed = 1.0
+                    boost = energy > 20 and dd > 6
+                else:
+                    move_yaw = None  # stand still: silent and out of sight
+                    boost = False
+            elif target is not None and tkind == "mech":
+                tp = target["pos"]
+                move_yaw = math.atan2(me[1] - tp[1], me[0] - tp[0]) + 0.5 * self.strafe
+                boost = energy > 25
         if dodge is not None:
             move_yaw = dodge
             speed = 1.0
@@ -422,7 +493,7 @@ class Bot:
         act["fire"] = fire
 
         if obs["tick"] % 10 == 0:
-            mf.draw.label(f"hp {me_s['hp']:.0f} e {energy:.0f} {'T' + str(target['id']) if target else '-'}")
+            mf.draw.label(f"hp {me_s['hp']:.0f} e {energy:.0f} {'T' + str(target['id']) if target else '-'}{' HIDE' if self.hiding else ''}")
         return act
 
 
