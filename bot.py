@@ -1,4 +1,4 @@
-"""HCMUT TMT - Mech Royale bot v4a (v3 + FIRE_SLACK 0.15) (rule-based, standard library only).
+"""HCMUT TMT - Mech Royale bot v4b (v3 + close range: gun 45 m, laser 100 m) (rule-based, standard library only).
 
 Ideas: stay inside the zone early, lead gun shots, only fire with a clear line,
 laser/lightning as second weapon, face the attacker, back off to regenerate,
@@ -30,9 +30,9 @@ FARM_CRATE_RANGE = 150.0
 LOOT_RANGE = 180.0
 EXPLORE_UNTIL = 330.0
 # tuning knobs (one experiment = one change here)
-FIRE_SLACK = 0.15       # rad added to the gun's on-target tolerance (torso slews 0.2 rad per tick)
-WANT_GUN = 100.0        # preferred fighting distance with only the gun
-WANT_LASER = 150.0      # ... when holding a laser
+FIRE_SLACK = 0.0        # rad added to the gun's on-target tolerance (torso slews 0.2 rad per tick)
+WANT_GUN = 45.0         # preferred fighting distance with only the gun
+WANT_LASER = 100.0      # ... when holding a laser
 WANT_LIGHTNING = 30.0   # ... when holding lightning (and HP > 50%)
 
 
