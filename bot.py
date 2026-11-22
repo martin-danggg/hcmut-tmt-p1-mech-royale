@@ -1,10 +1,12 @@
-"""HCMUT TMT - Mech Royale bot v2 (rule-based, standard library only).
+"""HCMUT TMT - Mech Royale bot v3 (rule-based, standard library only).
 
 Ideas: stay inside the zone early, lead gun shots, only fire with a clear line,
 laser/lightning as second weapon, face the attacker, back off to regenerate,
 take cubes/loot/drops when it is quiet.
 v2: when HP < 45% with a known threat, walk to the nearest spot no threat can see
-and stand still (silent) until HP > 90%. All rule numbers are read from hello.config.
+and stand still (silent) until HP > 90%.
+v3: with no mech in sight, farm drones/crates/cubes/supply drops inside the safe area
+and wander the next circle until 330 s to find them. All rule numbers are read from hello.config.
 """
 import math
 import os
@@ -22,7 +24,11 @@ THREAT_SOUNDS = {"gun", "laser", "laser_charge", "lightning", "mortar", "step", 
 UPGRADE_ORDER = ["plating", "armor", "nanites", "laser_damage", "gun_damage", "laser_charge", "gun_rate",
                  "lightning_efficiency", "gyros", "gun_mag", "servos", "sensors", "lightning_range",
                  "lightning_chain", "gun_velocity", "laser_pierce", "capacitor", "reactor", "jets"]
-WANT_WEAPONS = ["laser", "lightning"]  # never take a mortar (cook-off, self splash)
+WANT_WEAPONS = ["laser", "lightning"]
+FARM_NPC_RANGE = 180.0   # v3: actively farm drones (2 cubes each) and crates (1 cube) when no mech is in sight
+FARM_CRATE_RANGE = 150.0
+LOOT_RANGE = 180.0
+EXPLORE_UNTIL = 330.0  # never take a mortar (cook-off, self splash)
 
 
 def wrap(a):
@@ -106,6 +112,8 @@ class Bot:
         self.hiding = False
         self.cover = None
         self.cover_t = -1.0
+        self.wander = None
+        self.wander_until = 0.0
 
     # ------------------------------------------------------------------ zone
     def zone_now(self, z, t):
@@ -286,15 +294,15 @@ class Bot:
                 if sc < best:
                     best, target, tvis = sc, m, vis
         tkind = "mech"
-        if target is None and npcs and hp_frac > 0.5:
+        if target is None and npcs and hp_frac > 0.4:
             n = min(npcs, key=lambda m: dist2(m["pos"], me))
-            if dist2(n["pos"], me) < 70 and self.safe(n["pos"], z, t):
+            if dist2(n["pos"], me) < FARM_NPC_RANGE and self.safe(n["pos"], z, t):
                 target, tkind = n, "npc"
                 tvis = self.grid.los(muzzle, [n["pos"][0], n["pos"][1], n["pos"][2] + 1.75])
         crate = None
         if target is None and obs["crates"]:
             c = min(obs["crates"], key=lambda c: dist2(c["pos"], me))
-            if dist2(c["pos"], me) < 55 and self.grid.los(muzzle, [c["pos"][0], c["pos"][1], c["pos"][2] + 1.2]):
+            if dist2(c["pos"], me) < FARM_CRATE_RANGE and self.safe(c["pos"], z, t) and self.grid.los(muzzle, [c["pos"][0], c["pos"][1], c["pos"][2] + 1.2]):
                 crate = c
 
         # ---- aim & fire
@@ -355,6 +363,8 @@ class Bot:
             else:
                 # sweep around the travel/zone direction to see who is coming
                 base = math.atan2(z["next_center"][1] - me[1], z["next_center"][0] - me[0])
+                if self.wander is not None and t < EXPLORE_UNTIL:
+                    base = math.atan2(self.wander[1] - me[1], self.wander[0] - me[0]) + math.pi
                 aim_yaw = wrap(base + math.pi + 1.6 * math.sin(t * 0.9 + self.scan_phase))
             aim_pitch = 0.0
             if gun is not None and gun.get("ammo", 99) < gun["stats"]["mag"] * 0.6 and gun.get("reload", 0) == 0:
@@ -403,11 +413,8 @@ class Bot:
                 vy += math.sin(gy) * 0.8
             move_yaw = math.atan2(vy, vx)
             boost = hp_frac < 0.35 and energy > 25
-        elif goal is not None:
-            move_yaw = math.atan2(goal[1] - me[1], goal[0] - me[0])
-            boost = boost or (energy > 60 and (z["shrink_start"] - t) < dist2(me, goal) / 11.0 + 5)
         else:
-            # inside the safe circle: collect things when it is quiet
+            # v3: no mech in sight -> farm cubes, loot and drops that are safe to reach, then the zone
             pts = []
             if not mechs:
                 for c in obs["cubes"]:
@@ -417,21 +424,43 @@ class Bot:
                         if p["kind"] in WANT_WEAPONS and p["kind"] not in slot:
                             pts.append((dist2(p["pos"], me) - 20, p["pos"]))
                 for dr in obs["drops"]:
-                    if dr["lands_in"] < 8 and dr.get("holder") in (None, me_s["id"]) and hp_frac > 0.4:
-                        pts.append((dist2(dr["pos"], me) - 40, dr["pos"]))
-            pts = [p for p in pts if p[0] < 120 and self.safe(p[1], z, t)]
-            if pts:
+                    dd = dist2(dr["pos"], me)
+                    if dd < 300 and dr["lands_in"] < dd / 11.0 + 3 and dr.get("holder") in (None, me_s["id"]) \
+                            and hp_frac > 0.3:
+                        pts.append((dd - 60, dr["pos"]))
+            pts = [p for p in pts if p[0] < LOOT_RANGE and self.safe(p[1], z, t)]
+            if pts and not outside:
                 _, gp = min(pts, key=lambda p: p[0])
                 dd = dist2(gp, me)
                 if dd > 1.0:
                     move_yaw = math.atan2(gp[1] - me[1], gp[0] - me[0])
                     speed = min(1.0, dd / 4.0)
-            elif target is not None and tkind == "npc":
+                    boost = energy > 70 and dd > 40
+            elif target is not None and tkind == "npc" and not outside:
                 tp = target["pos"]
-                move_yaw = math.atan2(tp[1] - me[1], tp[0] - me[0]) + math.pi / 2 * self.strafe
-                speed = 0.6
+                to_t = math.atan2(tp[1] - me[1], tp[0] - me[0])
+                d = dist2(tp, me)
+                radial = 1.0 if d > 45 else (-0.6 if d < 25 else 0.0)
+                vx = math.cos(to_t) * radial + math.cos(to_t + math.pi / 2) * self.strafe * 0.7
+                vy = math.sin(to_t) * radial + math.sin(to_t + math.pi / 2) * self.strafe * 0.7
+                move_yaw = math.atan2(vy, vx)
+            elif crate is not None and not outside and dist2(crate["pos"], me) > 30:
+                move_yaw = math.atan2(crate["pos"][1] - me[1], crate["pos"][0] - me[0])
+            elif goal is not None:
+                move_yaw = math.atan2(goal[1] - me[1], goal[0] - me[0])
+                boost = boost or (energy > 60 and (z["shrink_start"] - t) < dist2(me, goal) / 11.0 + 5)
+            elif t < EXPLORE_UNTIL:
+                # wander inside the next circle to find drones, crates and cubes
+                nc, nr = z["next_center"], z["next_radius"]
+                if self.wander is None or t > self.wander_until or dist2(self.wander, me) < 8 \
+                        or dist2(self.wander, nc) > nr * 0.7:
+                    a = self.rng.random() * TAU
+                    r = nr * 0.6 * math.sqrt(self.rng.random())
+                    self.wander = [nc[0] + math.cos(a) * r, nc[1] + math.sin(a) * r]
+                    self.wander_until = t + 25.0
+                move_yaw = math.atan2(self.wander[1] - me[1], self.wander[0] - me[0])
             else:
-                # drift toward the middle of the next circle, slowly (silent below step speed)
+                # late game: drift toward the middle of the next circle, slowly (silent below step speed)
                 nc = z["next_center"]
                 dd = dist2(me, nc)
                 if dd > 10:
