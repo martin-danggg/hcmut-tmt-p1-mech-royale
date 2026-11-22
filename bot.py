@@ -1,4 +1,4 @@
-"""HCMUT TMT - Mech Royale bot v4b (v3 + close range: gun 45 m, laser 100 m) (rule-based, standard library only).
+"""HCMUT TMT - Mech Royale bot v5a (v3 + stealth) (rule-based, standard library only).
 
 Ideas: stay inside the zone early, lead gun shots, only fire with a clear line,
 laser/lightning as second weapon, face the attacker, back off to regenerate,
@@ -31,9 +31,10 @@ LOOT_RANGE = 180.0
 EXPLORE_UNTIL = 330.0
 # tuning knobs (one experiment = one change here)
 FIRE_SLACK = 0.0        # rad added to the gun's on-target tolerance (torso slews 0.2 rad per tick)
-WANT_GUN = 45.0         # preferred fighting distance with only the gun
-WANT_LASER = 100.0      # ... when holding a laser
+WANT_GUN = 100.0        # preferred fighting distance with only the gun
+WANT_LASER = 150.0      # ... when holding a laser
 WANT_LIGHTNING = 30.0   # ... when holding lightning (and HP > 50%)
+STEALTH = True          # v5a: stay silent and hidden, shoot only when found
 
 
 def wrap(a):
@@ -119,6 +120,9 @@ class Bot:
         self.cover_t = -1.0
         self.wander = None
         self.wander_until = 0.0
+        self.last_hit_t = -99.0
+        self.spot = None
+        self.spot_t = -99.0
 
     # ------------------------------------------------------------------ zone
     def zone_now(self, z, t):
@@ -213,6 +217,33 @@ class Bot:
                 return best[1]
         return None
 
+    def find_spot(self, me, z, t):
+        """Nearby safe ground spot from which the fewest directions are open (v5a)."""
+        g = self.grid
+        if not g.ok:
+            return None
+        best = None
+        for r in (0.0, 8.0, 16.0, 26.0, 36.0):
+            for k in range(1 if r == 0 else 12):
+                a = k * TAU / 12
+                p = [me[0] + math.cos(a) * r, me[1] + math.sin(a) * r]
+                pz = g.height(p[0], p[1])
+                if pz > me[2] + 1.5 or not self.safe(p, z, t, margin=20.0):
+                    continue
+                if r > 0 and not self.walkable_line(me, p, me[2]):
+                    continue
+                eye = pz + 8.0
+                open_dirs = 0
+                for j in range(12):
+                    b = j * TAU / 12
+                    q = [p[0] + math.cos(b) * 60, p[1] + math.sin(b) * 60, eye]
+                    if g.los([p[0], p[1], eye], q, step=3.0):
+                        open_dirs += 1
+                cost = open_dirs + r / 12.0
+                if best is None or cost < best[0]:
+                    best = (cost, p)
+        return best[1] if best else None
+
     # ------------------------------------------------------------- shooting
     def lead(self, me_muzzle, tpos, tvel, speed, zoff):
         c = [tpos[0], tpos[1], tpos[2] + zoff]
@@ -275,6 +306,8 @@ class Bot:
             if e["type"] == "damaged" and e.get("bearing") is not None:
                 self.threat_yaw = e["bearing"]
                 self.threat_until = t + 2.5
+                if e.get("by") is not None:
+                    self.last_hit_t = t
         if not mechs:
             best_s = None
             for s in obs["sounds"]:
@@ -299,13 +332,13 @@ class Bot:
                 if sc < best:
                     best, target, tvis = sc, m, vis
         tkind = "mech"
-        if target is None and npcs and hp_frac > 0.4:
+        if target is None and npcs and hp_frac > 0.4 and not STEALTH:
             n = min(npcs, key=lambda m: dist2(m["pos"], me))
             if dist2(n["pos"], me) < FARM_NPC_RANGE and self.safe(n["pos"], z, t):
                 target, tkind = n, "npc"
                 tvis = self.grid.los(muzzle, [n["pos"][0], n["pos"][1], n["pos"][2] + 1.75])
         crate = None
-        if target is None and obs["crates"]:
+        if target is None and obs["crates"] and not STEALTH:
             c = min(obs["crates"], key=lambda c: dist2(c["pos"], me))
             if dist2(c["pos"], me) < FARM_CRATE_RANGE and self.safe(c["pos"], z, t) and self.grid.los(muzzle, [c["pos"][0], c["pos"][1], c["pos"][2] + 1.2]):
                 crate = c
@@ -380,6 +413,10 @@ class Bot:
                 if 0 < lw.get("charge", 0) < lw["stats"]["charge"]:
                     fire[slot["laser"]] = True
 
+        if STEALTH and target is not None and tkind == "mech":
+            found = t - self.last_hit_t < 4.0 or dist2(target["pos"], me) < 50.0
+            if not found:
+                fire = [False, False]  # do not give ourselves away
         # ---- where to go
         goal = self.zone_goal(me, z, t)
         dodge = None
@@ -454,6 +491,13 @@ class Bot:
             elif goal is not None:
                 move_yaw = math.atan2(goal[1] - me[1], goal[0] - me[0])
                 boost = boost or (energy > 60 and (z["shrink_start"] - t) < dist2(me, goal) / 11.0 + 5)
+            elif STEALTH:
+                # sit still in the least visible spot nearby
+                if self.spot is None or t - self.spot_t > 15.0 or not self.safe(self.spot, z, t):
+                    self.spot = self.find_spot(me, z, t)
+                    self.spot_t = t
+                if self.spot is not None and dist2(self.spot, me) > 1.5:
+                    move_yaw = math.atan2(self.spot[1] - me[1], self.spot[0] - me[0])
             elif t < EXPLORE_UNTIL:
                 # wander inside the next circle to find drones, crates and cubes
                 nc, nr = z["next_center"], z["next_radius"]
@@ -473,9 +517,9 @@ class Bot:
                     speed = 0.4
         # ---- hide behind a building to regenerate (v2)
         threats = [v[1] for v in self.seen.values()]
-        if not self.hiding and hp_frac < 0.45 and threats:
+        if not self.hiding and (hp_frac < 0.45 or (STEALTH and mechs)) and threats:
             self.hiding = True
-        if self.hiding and (hp_frac > 0.9 or not threats):
+        if self.hiding and (not threats or (hp_frac > 0.9 and not (STEALTH and mechs))):
             self.hiding = False
             self.cover = None
         if self.hiding and not outside:
@@ -495,6 +539,11 @@ class Bot:
                 tp = target["pos"]
                 move_yaw = math.atan2(me[1] - tp[1], me[0] - tp[0]) + 0.5 * self.strafe
                 boost = energy > 25
+        if STEALTH and not outside and not self.hiding and move_yaw is not None:
+            urgent = goal is not None and (z["shrink_start"] - t) < dist2(me, goal) / 11.0 + 20
+            if not urgent:
+                speed = min(speed, 0.4)  # below step_speed: no footstep sound
+                boost = False
         if dodge is not None:
             move_yaw = dodge
             speed = 1.0
