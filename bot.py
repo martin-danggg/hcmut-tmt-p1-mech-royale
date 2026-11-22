@@ -1,4 +1,4 @@
-"""HCMUT TMT - Mech Royale bot v6b (v3 + offence-first upgrades) (rule-based, standard library only).
+"""HCMUT TMT - Mech Royale bot v6c (v3 + chase wounded mechs) (rule-based, standard library only).
 
 Ideas: stay inside the zone early, lead gun shots, only fire with a clear line,
 laser/lightning as second weapon, face the attacker, back off to regenerate,
@@ -21,7 +21,7 @@ GRID_FILE = os.path.join(HERE, "map", "solid_v2.i16")
 TERRAIN_CRC_V2 = 3005214772  # crc32 of arena/v2/terrain.i16 the grid was built from
 TAU = 2 * math.pi
 THREAT_SOUNDS = {"gun", "laser", "laser_charge", "lightning", "mortar", "step", "boost", "jet", "reload"}
-UPGRADE_ORDER = ["gun_rate", "gun_damage", "laser_damage", "laser_charge", "lightning_efficiency", "plating", "armor", "nanites",
+UPGRADE_ORDER = ["plating", "armor", "nanites", "laser_damage", "gun_damage", "laser_charge", "gun_rate",
                  "lightning_efficiency", "gyros", "gun_mag", "servos", "sensors", "lightning_range",
                  "lightning_chain", "gun_velocity", "laser_pierce", "capacitor", "reactor", "jets"]
 WANT_WEAPONS = ["laser", "lightning"]  # never take a mortar (cook-off, self splash)
@@ -35,7 +35,7 @@ WANT_GUN = 100.0        # preferred fighting distance with only the gun
 WANT_LASER = 150.0      # ... when holding a laser
 WANT_LIGHTNING = 30.0   # ... when holding lightning (and HP > 50%)
 HIDE_HP = 0.45          # hide to regenerate below this HP fraction (0 = never hide)
-CHASE_HP = 0.0          # chase a mech that left view if its HP fraction was below this (0 = off)
+CHASE_HP = 0.5          # chase a mech that left view if its HP fraction was below this (0 = off)
 
 
 def wrap(a):
